@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Which backend answered?</title>
+<style>
+  :root{
+    --bg:#eef2f8; --panel:#ffffff; --ink:#14213d; --muted:#5b6b88;
+    --line:#d6deec; --k8s:#326ce5; --k8s-soft:#dfe9fd; --ok:#1a7f4b;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0f1830; --panel:#16223f; --ink:#e8eefc; --muted:#93a3c4;
+      --line:#2a3a63; --k8s:#6c9bff; --k8s-soft:#22366a; --ok:#4cc38a;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:16px/1.5 "Avenir Next","Segoe UI",system-ui,sans-serif}
+  main{max-width:760px;margin:0 auto;padding:40px 20px 64px}
+  h1{font-size:1.5rem;margin:0 0 4px;font-weight:650}
+  .sub{color:var(--muted);margin:0 0 28px}
+  .hero{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:24px}
+  .hero .label{color:var(--muted);font-size:.9rem}
+  .hero .who{font:600 clamp(1.1rem,4.5vw,1.9rem)/1.3 ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+             word-break:break-all;margin:6px 0 10px;color:var(--k8s)}
+  .status{display:inline-flex;gap:8px;align-items:center;font-size:.9rem;color:var(--muted)}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--ok)}
+  .dot.bad{background:#d64545}
+  dl{display:grid;grid-template-columns:max-content 1fr;gap:8px 20px;margin:22px 0 0}
+  dt{color:var(--muted)} dd{margin:0;font-family:ui-monospace,Menlo,Consolas,monospace;word-break:break-all}
+  h2{font-size:1.05rem;margin:36px 0 4px;font-weight:650}
+  .hint{color:var(--muted);margin:0 0 14px;font-size:.92rem}
+  #tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}
+  .tile{border:1px solid var(--line);background:var(--panel);border-radius:10px;padding:12px 14px;
+        transition:background .25s,border-color .25s}
+  .tile.live{background:var(--k8s-soft);border-color:var(--k8s)}
+  .tile b{display:block;font:600 .85rem ui-monospace,Menlo,Consolas,monospace;word-break:break-all}
+  .tile span{color:var(--muted);font-size:.85rem}
+  .bar{height:5px;border-radius:3px;background:var(--line);margin-top:8px;overflow:hidden}
+  .bar i{display:block;height:100%;background:var(--k8s)}
+  @media (prefers-reduced-motion: reduce){.tile{transition:none}}
+</style>
+</head>
+<body>
+<main>
+  <h1>Which backend answered?</h1>
+  <p class="sub">This page asks the server who it is every 2 seconds. Behind a load balancer, you'll see different backends appear.</p>
+ 
+  <section class="hero" aria-live="polite">
+    <div class="label">Served by</div>
+    <div class="who" id="who">Connecting…</div>
+    <div class="status"><span class="dot" id="dot"></span><span id="status">Waiting for first response</span></div>
+    <dl id="details"></dl>
+  </section>
+ 
+  <h2>Backends seen in this session</h2>
+  <p class="hint">The highlighted one answered most recently. Bars show each backend's share of your requests.</p>
+  <div id="tiles"></div>
+</main>
+ 
+<script>
+  const seen = new Map();      // backend id -> hit count
+  let total = 0, lastId = null;
+  const $ = id => document.getElementById(id);
+ 
+  const FIELDS = [
+    ['Platform','platform'], ['Pod','pod'], ['Namespace','namespace'], ['Node','node'],
+    ['Pod IP','pod_ip'], ['Instance','instance_id'], ['Zone','az'],
+    ['Private IP','private_ip'], ['Hostname','hostname']
+  ];
+ 
+  function renderDetails(d){
+    const dl = $('details'); dl.textContent = '';
+    for (const [label,key] of FIELDS){
+      if (!d[key]) continue;
+      const dt = document.createElement('dt'); dt.textContent = label;
+      const dd = document.createElement('dd'); dd.textContent = d[key];
+      dl.append(dt, dd);
+    }
+  }
+ 
+  function renderTiles(){
+    const box = $('tiles'); box.textContent = '';
+    for (const [id,n] of seen){
+      const t = document.createElement('div');
+      t.className = 'tile' + (id === lastId ? ' live' : '');
+      const b = document.createElement('b'); b.textContent = id;
+      const s = document.createElement('span'); s.textContent = n + (n === 1 ? ' request' : ' requests');
+      const bar = document.createElement('div'); bar.className = 'bar';
+      const fill = document.createElement('i'); fill.style.width = Math.round(100*n/total) + '%';
+      bar.append(fill); t.append(b, s, bar); box.append(t);
+    }
+  }
+ 
+  async function tick(){
+    try{
+      const t0 = performance.now();
+      const r = await fetch('/info.json', {cache:'no-store'});
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const d = await r.json();
+      const ms = Math.round(performance.now() - t0);
+ 
+      lastId = d.pod || d.instance_id || d.hostname || 'unknown';
+      seen.set(lastId, (seen.get(lastId) || 0) + 1);
+      total++;
+ 
+      $('who').textContent = lastId;
+      $('dot').className = 'dot';
+      $('status').textContent = 'Request ' + total + ' answered in ' + ms + ' ms';
+      renderDetails(d);
+      renderTiles();
+    }catch(e){
+      $('dot').className = 'dot bad';
+      $('status').textContent = 'No answer: ' + e.message + '. Retrying…';
+    }
+  }
+  tick(); setInterval(tick, 2000);
+</script>
+</body>
+</html>
+ 
